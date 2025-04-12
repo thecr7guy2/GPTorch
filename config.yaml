@@ -1,0 +1,46 @@
+# Model Architecture Configuration
+n_layer: 12           # Number of transformer layers
+n_heads: 12           # Number of attention heads
+n_embd: 768           # Embedding dimension
+vocab_size: 50304   # Vocabulary size (GPT-2 default)
+dropout: 0.1          # Dropout probability
+activation: "gelu"    # Activation function: "gelu" or "relu"
+
+# Context/Sequence Configuration
+context_len: 1024     # Maximum sequence length
+
+# Training Configuration
+seed: 42              # Random seed for reproducibility
+epochs: 10            # Number of training epochs
+batch_size: 2         # Batch size for each gradient step
+mega_batch_size: 512  # Size of batches loaded from DataLoader
+grad_clip: 1.0        # Gradient clipping
+
+# Optimizer Configuration
+optimizer: "adamw"    # Optimizer: "adamw" or "adam"y
+max_lr: 3.0e-4        # Maximum learning rate
+min_lr: 3.0e-5        # Minimum learning rate
+beta1: 0.9            # Beta1 for Adam/AdamW
+beta2: 0.95           # Beta2 for Adam/AdamW
+weight_decay: 0.1     # Weight decay
+warmup_steps: 1000    # Number of warmup steps
+
+# Dataset Configuration
+dataset_name: "andersonbcdefg/cc-stories-parquet" 
+cache_dir: "data"    # Directory to cache dataset
+tokenizer: "gpt2"     # Tokenizer to use
+
+# Checkpoint Configuration
+checkpoint_dir: "checkpoints"  # Directory to save checkpoints
+save_every: 1         # Save checkpoint every N epochs
+
+# Logging Configuration
+log_interval: 10      
+log_model_summary: true  # Whether to log model summary
+generate_interval: 5  # Generate sample every N steps
+sample_max_tokens: 100  
+
+# Weights & Biases Configuration
+wandb_project: "gpt2-training"  # W&B project name
+run_name: "gpt2-training"      # W&B run name
+
