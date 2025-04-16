@@ -127,10 +127,8 @@ def save_checkpoint(
     scheduler,
     epoch,
     step,
-    loss,
     config,
     model_dir="checkpoints",
-    is_best=False,
 ):
     """
     Save model checkpoint
@@ -157,24 +155,13 @@ def save_checkpoint(
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-        "loss": loss,
         "step": step,
-        "config": config,  # Save config in the checkpoint for easier loading
+        "config": config, 
     }
 
     # Save regular epoch checkpoint
     checkpoint_path = os.path.join(model_dir, f"epochs/epoch_{epoch+1}.pt")
     torch.save(checkpoint, checkpoint_path)
-
-    # Save latest checkpoint (for resuming)
-    latest_path = os.path.join(model_dir, "latest.pt")
-    torch.save(checkpoint, latest_path)
-
-    # If this is the best model, save a separate copy
-    if is_best:
-        best_path = os.path.join(model_dir, "best_model.pt")
-        torch.save(checkpoint, best_path)
-        logger.info(f"Saved best model to {best_path}")
 
     return checkpoint_path
 
@@ -271,7 +258,7 @@ def load_and_prepare_data(config):
         # Create dataloader
         loader = DataLoader(
             dataset,
-            batch_size=config["mega_batch_size"],
+            batch_size=config["batch_size"],
             shuffle=True,
             drop_last=True,
         )
@@ -348,7 +335,7 @@ def train_model(config, args):
         config["context_len"],
     ).to(device)
 
-    # model = torch.compile(model)
+    model = torch.compile(model)
 
         
 
@@ -385,7 +372,6 @@ def train_model(config, args):
     # Resume from checkpoint if specified
     start_epoch = 0
     global_step = 0
-    best_epoch_loss = float("inf")
 
     if args.resume:
         start_epoch, global_step, run_id = load_checkpoint(
@@ -407,7 +393,6 @@ def train_model(config, args):
 
     # Calculate gradient accumulation steps
     num_grad_accum_steps = config["mega_batch_size"] // config["batch_size"]
-    logger.info(f"Using {num_grad_accum_steps} gradient accumulation steps")
 
     # Create checkpoint directory
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
@@ -419,15 +404,14 @@ def train_model(config, args):
         train_loop = tqdm(
             train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Train]"
         )
-        epoch_start_time = time.time()
-        epoch_loss = 0.0
+
+        
+        accumulated_loss = 0.0
+        optimizer.zero_grad()
+        accumulation_counter = 0
 
         for batch_idx, batch in enumerate(train_loop):
-            step_time_start = time.time()
             global_step = epoch * steps_per_epoch + batch_idx
-            step_loss = 0.0
-
-            # Generate sample text periodically
             generate_interval = config.get("generate_interval", 500)
             if global_step % generate_interval == 0:
                 generated_text = generate_sample_text(
@@ -444,94 +428,61 @@ def train_model(config, args):
                     
                 model.train()
 
-            # Zero gradients at the beginning of each mega-batch
-            optimizer.zero_grad()
+            input_ids = batch[0].to(device)
+            target_ids = batch[1].to(device)
 
-            for i in range(num_grad_accum_steps):
 
-                start_idx = i * config["batch_size"]
-                end_idx = start_idx + config["batch_size"]
-                input_ids = batch[0][start_idx:end_idx,].to(device)
-                target_ids = batch[1][start_idx:end_idx].to(device)
-
-                # Forward pass with mixed precision if enabled
-                with (torch.autocast(device_type=device.type, dtype=torch.bfloat16)):
-                    # Forward pass
-                    outputs = model(input_ids)
-                    # Calculate loss
-                    loss = F.cross_entropy(
+            with (torch.autocast(device_type=device.type, dtype=torch.bfloat16)):
+                outputs = model(input_ids)
+                    
+                loss = F.cross_entropy(
                         outputs.view(-1, outputs.size(-1)),
                         target_ids.view(-1),
                     )
-                    # Scale loss for gradient accumulation
-                    loss = loss / num_grad_accum_steps
+                   
+                loss = loss / num_grad_accum_steps
 
-                # Backward pass
-                loss.backward()
+        
+            loss.backward()
 
-                # Track loss
-                step_loss += loss.item()
+            accumulated_loss = accumulated_loss + loss.item()
 
-            # Apply gradient clipping
-            grad_clip = config.get("grad_clip", 1.0)
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            accumulation_counter += 1
+            
 
-            # Optimizer step
-            optimizer.step()
-            scheduler.step()
+            if accumulation_counter >= num_grad_accum_steps:
+                grad_clip = config.get("grad_clip", 1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-            # Make sure CUDA finishes
-            if device.type == "cuda":
-                torch.cuda.synchronize()
+                # Optimizer step
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
 
-            # Calculate step metrics
-            step_time = time.time() - step_time_start
-            step_time_ms = step_time * 1000
-            tokens_per_sec = (
-                config["batch_size"] * config["context_len"] * num_grad_accum_steps
-            ) / step_time
+                log_interval =  num_grad_accum_steps
+                if global_step % log_interval == 0:
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    average_loss = accumulated_loss
 
-            # Update epoch loss
-            epoch_loss += step_loss
-
-            # Log metrics
-            log_interval = config.get("log_interval", 10)
-            if batch_idx % log_interval == 0:
-                current_lr = optimizer.param_groups[0]["lr"]
-
-                # Update progress bar
-                train_loop.set_postfix(
-                    loss=f"{step_loss:.4f}",
-                    lr=f"{current_lr:.3e}",
-                    tokens_per_sec=f"{tokens_per_sec:.2f}",
-                    grad_norm=f"{grad_norm.item():.2f}",
-                )
-
-                # Log to W&B
-                if not args.no_wandb:
-                    wandb.log(
-                        {
-                            "train/loss": step_loss,
-                            "train/perplexity": math.exp(step_loss),
-                            "train/learning_rate": current_lr,
-                            "train/grad_norm": grad_norm.item(),
-                            "performance/tokens_per_sec": tokens_per_sec,
-                            "performance/step_time_ms": step_time_ms,
-                            "progress/epoch": epoch + 1,
-                            "progress/step": global_step,
-                        },
-                        step=global_step,
+                    train_loop.set_postfix(
+                        loss=f"{average_loss:.4f}",
+                        lr=f"{current_lr:.3e}",
+                        grad_norm=f"{grad_norm.item():.2f}",
                     )
 
-        # End of epoch processing
-        epoch_time = time.time() - epoch_start_time
-        avg_epoch_loss = epoch_loss / steps_per_epoch
-        perplexity = math.exp(avg_epoch_loss)
+                    if not args.no_wandb:
+                        wandb.log(
+                            {
+                                "train/loss": average_loss,
+                                "train/perplexity": math.exp(average_loss),
+                                "train/learning_rate": current_lr,
+                                "train/grad_norm": grad_norm.item(),
+                            },
+                            step=global_step,
+                        )
+                accumulated_loss = 0.0 
+                accumulation_counter = 0 
 
-        # Save checkpoint if this is the best model
-        is_best = avg_epoch_loss < best_epoch_loss
-        if is_best:
-            best_epoch_loss = avg_epoch_loss
 
         checkpoint_path = save_checkpoint(
             model,
@@ -539,24 +490,15 @@ def train_model(config, args):
             scheduler,
             epoch,
             global_step,
-            avg_epoch_loss,
             config,
             checkpoint_dir,
-            is_best,
         )
 
-        logger.info(
-            f"Epoch {epoch+1} completed in {epoch_time:.2f}s - "
-            f"Avg Loss: {avg_epoch_loss:.4f}, Perplexity: {perplexity:.2f}"
-        )
         logger.info(f"Checkpoint saved to {checkpoint_path}")
 
     # End of training
     logger.info(f"Training completed after {config['epochs']} epochs")
-    logger.info(
-        f"Best loss: {best_epoch_loss:.4f}, perplexity: {math.exp(best_epoch_loss):.2f}"
-    )
-
+    
     if not args.no_wandb:
         wandb.finish()
 

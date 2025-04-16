@@ -28,7 +28,7 @@ class GPT2Dataset(Dataset):
             raise ValueError("Tokenizer must have an 'encode' method")
             
         self.seq_len = seq_len
-        self.data = data[:5000000]
+        self.data = data
         self.tokenizer = tokenizer
 
         logger.info(f"Tokenizing dataset with sequence length {seq_len}")
