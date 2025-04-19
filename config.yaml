@@ -12,14 +12,14 @@ context_len: 1024     # Maximum sequence length
 # Training Configuration
 seed: 42              # Random seed for reproducibility
 epochs: 10            # Number of training epochs
-batch_size: 2         # Batch size for each gradient step
+batch_size: 8        # Batch size for each gradient step
 mega_batch_size: 512  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
 
 # Optimizer Configuration
 optimizer: "adamw"    # Optimizer: "adamw" or "adam"y
-max_lr: 3.0e-4        # Maximum learning rate
-min_lr: 3.0e-5        # Minimum learning rate
+max_lr: 6.0e-4        # Maximum learning rate
+min_lr: 6.0e-5        # Minimum learning rate
 beta1: 0.9            # Beta1 for Adam/AdamW
 beta2: 0.95           # Beta2 for Adam/AdamW
 weight_decay: 0.1     # Weight decay
@@ -36,11 +36,11 @@ save_every: 1         # Save checkpoint every N epochs
 
 # Logging Configuration
 log_interval: 64     
-log_model_summary: true  # Whether to log model summary
-generate_interval: 10  # Generate sample every N steps
+log_model_summary: true  
+generate_interval: 5000
 sample_max_tokens: 100  
 
 # Weights & Biases Configuration
-wandb_project: "gpt2-training"  # W&B project name
-run_name: "gpt2-training"      # W&B run name
+wandb_entity: "training-transformers-vast"
+wandb_project: "gpt2-sai-2" 
 

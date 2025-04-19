@@ -15,11 +15,14 @@ from datasets import load_dataset
 import tiktoken
 import wandb
 
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+
 from dataset import GPT2Dataset
 from model import GPT2
 
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -53,28 +56,29 @@ def load_config(config_path):
         raise
 
 
-def setup_wandb(config, resume_id=None):
-    """Initialize Weights & Biases for experiment tracking"""
-    try:
-        if resume_id:
-            wandb.init(
-                project=config["wandb_project"],
-                config=config,
-                id=resume_id,
-                resume="must",
-            )
-        else:
-            run_name = config.get("run_name", None)
-            if run_name:
-                run_name = f"{run_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-            else:
-                run_name = f"gpt2-{config['n_layer']}-{config['n_embd']}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+def setup_wandb(rank,config):
+    if rank == 0:
+        wandb.init(
+            entity=config["wandb_entity"],
+            project= config["wandb_project"],
+        )
+        wandb.run.name = f"gpt_train-{wandb.run.id}"
 
-            wandb.init(project=config["wandb_project"], config=config, name=run_name)
-        logger.info(f"Initialized W&B run: {wandb.run.name}")
-    except Exception as e:
-        logger.error(f"Error setting up W&B: {e}")
-        logger.warning("Continuing without W&B logging")
+def setup_ddp():
+    """Initializes the distributed environment."""
+    rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+    local_rank = int(os.environ['LOCAL_RANK'])
+
+    dist.init_process_group(rank=rank, world_size=world_size,backend="nccl")
+    torch.cuda.set_device(local_rank)
+    return rank, world_size, local_rank
+
+def cleanup_ddp():
+    """Destroys the distributed process group."""
+    dist.destroy_process_group()
+    print("DDP Cleanup complete.")
+
 
 
 def set_seed(seed):
@@ -150,13 +154,16 @@ def save_checkpoint(
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(os.path.join(model_dir, "epochs"), exist_ok=True)
 
+    model_to_save = model.module if isinstance(model, DDP) else model
+
     checkpoint = {
         "epoch": epoch,
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model_to_save.state_dict(), 
         "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+        "scheduler_state_dict": scheduler.state_dict(),
         "step": step,
-        "config": config, 
+        "config": config,
+        "wandb_run_id": config.get("wandb_run_id")
     }
 
     # Save regular epoch checkpoint
@@ -186,10 +193,10 @@ def load_checkpoint(model, optimizer, checkpoint_path, device="cpu", scheduler=N
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    # Handle different checkpoint formats (compiled vs non-compiled models)
+
     state_dict = checkpoint["model_state_dict"]
     if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
-        # Handle compiled model checkpoint
+
         new_state_dict = {}
         for key, value in state_dict.items():
             if key.startswith("_orig_mod."):
@@ -212,16 +219,11 @@ def load_checkpoint(model, optimizer, checkpoint_path, device="cpu", scheduler=N
     epoch = checkpoint.get("epoch", 0)
     step = checkpoint.get("step", 0)
 
-    # Try to get W&B run ID for resuming
-    run_id = None
-    if "wandb_run_id" in checkpoint:
-        run_id = checkpoint["wandb_run_id"]
-
     logger.info(f"Loaded checkpoint from epoch {epoch}, global step {step}")
-    return epoch, step, run_id
+    return epoch, step
 
 
-def load_and_prepare_data(config):
+def load_and_prepare_data(config,rank,world_size):
     """
     Load and prepare the dataset for training
 
@@ -248,23 +250,15 @@ def load_and_prepare_data(config):
         logger.info(f"Loading dataset: {dataset_name}")
         data = load_dataset(dataset_name, cache_dir=cache_dir, split="train")
 
-        # Join all texts with EOS token
         logger.info("Preparing dataset...")
         concat_data = "<|endoftext|>".join(text.strip() for text in data["text"])
 
-        # Create dataset
-        dataset = GPT2Dataset(concat_data, config["context_len"], tokenizer)
+        trainset = GPT2Dataset(concat_data, config["context_len"], tokenizer)
+        train_sampler = DistributedSampler(trainset, num_replicas=world_size, rank=rank, shuffle=True, seed=42)
+        train_loader = DataLoader(trainset, batch_size=config["batch_size"], sampler=train_sampler,drop_last=True)
 
-        # Create dataloader
-        loader = DataLoader(
-            dataset,
-            batch_size=config["batch_size"],
-            shuffle=True,
-            drop_last=True,
-        )
-
-        logger.info(f"Created dataloader with {len(loader)} batches")
-        return loader, tokenizer
+        logger.info(f"Created dataloader with {len(train_loader)} batches")
+        return train_loader, tokenizer,train_sampler
 
     except Exception as e:
         logger.error(f"Error preparing dataset: {e}")
@@ -316,16 +310,16 @@ def train_model(config, args):
     # Set up training environment
     set_seed(config["seed"])
 
-    if not args.no_wandb and "wandb_project" in config:
-        setup_wandb(config)
 
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    rank, world_size, local_rank = setup_ddp()
+    device = torch.device(f"cuda:{local_rank}")
+
+    
+    setup_wandb(rank,config)
+
     torch.set_float32_matmul_precision("high")
-
-
-    logger.info(f"Using device: {device}")
-
+    
     model = GPT2(
         config["n_embd"],
         config["vocab_size"],
@@ -335,18 +329,13 @@ def train_model(config, args):
         config["context_len"],
     ).to(device)
 
+    
+
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
     model = torch.compile(model)
 
-        
+    train_loader, tokenizer,train_sampler = load_and_prepare_data(config,rank,world_size)
 
-    # Log model summary
-    if config.get("log_model_summary", False):
-        logger.info(f"Model summary:\n{model.get_model_summary(device=device)}")
-
-    # Load data
-    train_loader, tokenizer = load_and_prepare_data(config)
-
-    # Setup optimizer
 
     optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -355,11 +344,10 @@ def train_model(config, args):
             weight_decay=config.get("weight_decay", 0.1),
     )
 
-    # Calculate training steps
     steps_per_epoch = len(train_loader)
     total_training_steps = config["epochs"] * steps_per_epoch
 
-    # Setup scheduler
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer=optimizer,
         num_warmup_steps=config["warmup_steps"],
@@ -367,70 +355,72 @@ def train_model(config, args):
         min_lr_ratio=config["min_lr"] / config["max_lr"],
     )
 
-    gen_table = wandb.Table(columns=["step", "prompt", "output"])
 
-    # Resume from checkpoint if specified
     start_epoch = 0
     global_step = 0
 
-    if args.resume:
-        start_epoch, global_step, run_id = load_checkpoint(
-            model, optimizer, args.resume, device, scheduler
-        )
-        # Resume W&B if specified
-        if not args.no_wandb and run_id:
-            setup_wandb(config, resume_id=run_id)
 
-    # Track W&B run ID for resumption
-    if not args.no_wandb:
-        config["wandb_run_id"] = wandb.run.id
-
-    # Setup W&B model watching and generation table
-    if not args.no_wandb:
-        log_interval = config.get("log_interval", 300)
+    log_interval = config.get("log_interval", 300)
+    if rank == 0: 
         wandb.watch(model, log="all", log_freq=log_interval)
         gen_table = wandb.Table(columns=["step", "prompt", "output"])
 
-    # Calculate gradient accumulation steps
-    num_grad_accum_steps = config["mega_batch_size"] // config["batch_size"]
+    
+    num_grad_accum_steps = config["mega_batch_size"] // (config["batch_size"] * world_size)
 
-    # Create checkpoint directory
+    if rank == 0:
+        print(f"Starting training")
+        print(f"World Size: {world_size}")
+        print(f"Batch size per GPU: {config['batch_size']}")
+        print(f"Effective total batch size: {config['batch_size'] * world_size}")
+
+    
     checkpoint_dir = config.get("checkpoint_dir", "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Training loop
+   
     for epoch in range(start_epoch, config["epochs"]):
         model.train()
-        train_loop = tqdm(
-            train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Train]"
-        )
 
-        
-        accumulated_loss = 0.0
+        train_sampler.set_epoch(epoch)
+
+        if rank == 0:
+            train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/ {config['epochs']} [Train]")
+        else:
+            train_loop = train_loader
+  
         optimizer.zero_grad()
+        step_loss = 0.0
+        epoch_loss = 0.0
         accumulation_counter = 0
 
         for batch_idx, batch in enumerate(train_loop):
             global_step = epoch * steps_per_epoch + batch_idx
+            is_last_batch = (batch_idx + 1) == len(train_loader)
+            
             generate_interval = config.get("generate_interval", 500)
             if global_step % generate_interval == 0:
-                generated_text = generate_sample_text(
-                        model,
-                        tokenizer,
-                        device,
-                    )
+                if rank == 0:
+                    model_to_generate = model.module if isinstance(model, DDP) else model
+                    generated_text = generate_sample_text(
+                            model_to_generate,
+                            tokenizer,
+                            device,
+                        )
 
-                if not args.no_wandb:
-                    temp_table = wandb.Table(columns=gen_table.columns, data=gen_table.data)
-                    temp_table.add_data(global_step, "In a world where humans have unlimited power, Sai was", generated_text)
-                    wandb.log({"generation/samples": temp_table}, step=global_step)
-                    gen_table = temp_table
-                    
-                model.train()
+                    if not args.no_wandb:
+                        temp_table = wandb.Table(columns=gen_table.columns, data=gen_table.data)
+                        temp_table.add_data(global_step, "In a world where humans have unlimited power, Sai was", generated_text)
+                        wandb.log({"generation/samples": temp_table}, step=global_step)
+                        gen_table = temp_table
+                        
+                    model.train()
 
-            input_ids = batch[0].to(device)
-            target_ids = batch[1].to(device)
-
+            if ((global_step) % (num_grad_accum_steps) == 0):
+                step_time_start = time.time()
+            
+            input_ids = batch[0].to(device,non_blocking=True)
+            target_ids = batch[1].to(device,non_blocking=True)
 
             with (torch.autocast(device_type=device.type, dtype=torch.bfloat16)):
                 outputs = model(input_ids)
@@ -445,63 +435,68 @@ def train_model(config, args):
         
             loss.backward()
 
-            accumulated_loss = accumulated_loss + loss.item()
-
-            accumulation_counter += 1
+            step_loss = step_loss + loss.item()
             
 
-            if accumulation_counter >= num_grad_accum_steps:
+            if ((global_step + 1 ) % (num_grad_accum_steps) == 0) or is_last_batch :
                 grad_clip = config.get("grad_clip", 1.0)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-                # Optimizer step
                 optimizer.step()
                 scheduler.step()
-                optimizer.zero_grad()
 
-                log_interval =  num_grad_accum_steps
-                if global_step % log_interval == 0:
-                    current_lr = optimizer.param_groups[0]["lr"]
-                    average_loss = accumulated_loss
+                torch.cuda.synchronize()    
+                step_time_end = time.time()
+                step_time_ms = (step_time_end - step_time_start) * 1000
 
+                if rank == 0:
+                    epoch_loss = epoch_loss + step_loss
+                    current_lr = optimizer.param_groups[0]['lr']
+                    accumulation_counter  =  accumulation_counter  + 1
                     train_loop.set_postfix(
-                        loss=f"{average_loss:.4f}",
+                        loss=f"{step_loss:.4f}",
                         lr=f"{current_lr:.3e}",
                         grad_norm=f"{grad_norm.item():.2f}",
                     )
-
                     if not args.no_wandb:
-                        wandb.log(
-                            {
-                                "train/loss": average_loss,
-                                "train/perplexity": math.exp(average_loss),
+                        wandb.log({
+                                "train/loss": step_loss,
                                 "train/learning_rate": current_lr,
                                 "train/grad_norm": grad_norm.item(),
-                            },
-                            step=global_step,
-                        )
-                accumulated_loss = 0.0 
-                accumulation_counter = 0 
-
-
-        checkpoint_path = save_checkpoint(
-            model,
-            optimizer,
-            scheduler,
-            epoch,
-            global_step,
-            config,
-            checkpoint_dir,
-        )
-
-        logger.info(f"Checkpoint saved to {checkpoint_path}")
-
-    # End of training
-    logger.info(f"Training completed after {config['epochs']} epochs")
+                                "performance/step_time_ms": step_time_ms,
+                            }, step=global_step)
+                        
+                step_loss = 0.0
+                optimizer.zero_grad()
     
-    if not args.no_wandb:
-        wandb.finish()
+        if rank == 0:
+            epoch_loss = epoch_loss / accumulation_counter
+            train_loop.set_postfix(
+                    loss=f"{epoch_loss:.4f}", 
+                    lr=f"{current_lr:.3e}",
+                )
+            wandb.log({"train/epoch_loss": epoch_loss}, step=global_step)
+            checkpoint_path = save_checkpoint(
+                model,
+                optimizer,
+                scheduler,
+                epoch,
+                global_step,
+                config,
+                checkpoint_dir,
+            )
 
+
+    
+
+    if not args.no_wandb and rank ==0:
+        wandb.finish()
+    
+    cleanup_ddp()
+
+    
+
+    
 
 if __name__ == "__main__":
     args = parse_args()
