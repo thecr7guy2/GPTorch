@@ -1,51 +1,46 @@
 import torch
 from torch.utils.data import Dataset
-import json
 import logging
+import os
+import glob
+import bisect
 
-logger = logging.getLogger(__name__)
+
 
 class GPT2Dataset(Dataset):
-    """
-    Dataset for training GPT-2 models with causal language modeling objective.
-    
-    This dataset takes text data, tokenizes it, and creates input-target pairs
-    where each target is the input shifted by one token to the right.
-    
-    Args:
-        data (str): The raw text data to be tokenized
-        seq_len (int): Maximum sequence length for model inputs
-        tokenizer: A tokenizer object that has an encode method
-    """
-    def __init__(self, data, seq_len, tokenizer):
+    def __init__(self, data_dir, seq_len):
         super().__init__()
-        
-        if not data:
-            raise ValueError("Input data cannot be empty")
-        if seq_len <= 0:
-            raise ValueError(f"Sequence length must be positive, got {seq_len}")
-        if not hasattr(tokenizer, 'encode'):
-            raise ValueError("Tokenizer must have an 'encode' method")
-            
         self.seq_len = seq_len
-        self.data = data
-        self.tokenizer = tokenizer
-
-        logger.info(f"Tokenizing dataset with sequence length {seq_len}")
-        self.tokens = self.tokenizer.encode(self.data, allowed_special={'<|endoftext|>'})
-        logger.info(f"Total tokens: {len(self.tokens)}")
-
-        # Calculate number of samples and reshape data
-        num_samples = len(self.tokens) // (self.seq_len + 1) 
-        self.tokens = self.tokens[: num_samples * (self.seq_len + 1)]
-        self.tokens = torch.tensor(self.tokens, dtype=torch.long).reshape(num_samples, self.seq_len + 1)
-        logger.info(f"Created {num_samples} training samples")
-
+        pattern = os.path.join(data_dir, "**", "shard_*.pt")
+        self.shard_files = sorted(glob.glob(pattern, recursive=True))
+        if not self.shard_files:
+            raise ValueError(f"No .pt shards found under {data_dir}")
+        
+        self.shard_lens = []
+        self.cumsum = []
+        total = 0
+        for path in self.shard_files:
+            shard_data = torch.load(path, map_location="cpu")
+            length = len(shard_data)
+            self.shard_lens.append(length)
+            total += length
+            self.cumsum.append(total)
+            del shard_data
+        self.total_len = total
 
     def __len__(self):
-        return len(self.tokens)
+        return self.total_len
 
     def __getitem__(self, idx):
-        x = self.tokens[idx, :-1]  # Input: all but last token
-        y = self.tokens[idx, 1:]   # Target: all but first token
+        
+        shard_idx = bisect.bisect_right(self.cumsum, idx)
+        num_before = self.cumsum[shard_idx - 1] if shard_idx > 0 else 0
+        local_idx = idx - num_before
+
+        
+        shard = torch.load(self.shard_files[shard_idx], map_location="cpu")
+        token_seq = shard[local_idx]
+        
+        x = token_seq[:-1]
+        y = token_seq[1:]
         return x, y
