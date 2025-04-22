@@ -191,7 +191,7 @@ def load_and_prepare_data(config, rank, world_size):
     )
 
     train_loader = DataLoader(
-        trainset, batch_size=config["batch_size"], sampler=train_sampler, drop_last=True
+        trainset, batch_size=config["batch_size"], sampler=train_sampler, drop_last=True,num_workers=4,pin_memory=True
     )
     steps_per_epoch = train_sampler.num_samples // config["batch_size"]
     logger.info(
@@ -218,7 +218,7 @@ def generate_sample_text(
 
             logits_top_k, top_k_indices = torch.topk(next_token_logits, top_k, dim=-1)
             probs = F.softmax(logits_top_k, dim=-1)
-            next_token = top_k_indices[0, torch.multinomial(probs[0], 1)].unsqueeze(0).unsqueeze(0)
+            next_token = top_k_indices[0, torch.multinomial(probs[0], 1)].unsqueeze(0)
 
             generated = torch.cat((generated, next_token), dim=1)
 

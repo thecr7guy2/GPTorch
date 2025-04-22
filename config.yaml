@@ -46,12 +46,12 @@ dataset:
   cache_dir: "./data"
   target_tokens: 5_000_000_000  
   subsets:
-    - name: "PG19"
-      hf_path: "deepmind/pg19"
-      split: "train"
-      text_field : "text" 
-      max_tokens: 700_000_000  
-      context_len: 1024
+    # - name: "PG19"
+    #   hf_path: "deepmind/pg19"
+    #   split: "train"
+    #   text_field : "text" 
+    #   max_tokens: 300_000_000  
+    #   context_len: 1024
     - name: "Fineweb-EDU"
       hf_path: "HuggingFaceFW/fineweb-edu"
       split: "train"
@@ -63,7 +63,7 @@ dataset:
     - name: "Stack"
       hf_path: "bigcode/the-stack"
       split: "train"
-      max_tokens: 300_000_000 
+      max_tokens: 400_000_000 
       text_field : "content" 
       context_len: 1024
       kwargs:

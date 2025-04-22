@@ -11,8 +11,9 @@ def inspect_shard(shard_path, context_length=1024, num_samples=3):
         raise FileNotFoundError(f"Shard not found: {shard_path}")
     
     data = torch.load(shard_path)
+
     print(f"Loaded shard with {len(data)} chunks")
-    
+    print(f"chunk shape is {data[0].shape}")
     # Validation checks
     total_tokens = 0
     valid_chunks = 0
@@ -46,8 +47,7 @@ def inspect_shard(shard_path, context_length=1024, num_samples=3):
     print(f"Valid chunks: {valid_chunks}")
     print(f"Total tokens: {total_tokens}")
     print(f"Expected chunk size: {context_length + 1}")
-    print(f"Max allowed tokens per shard: 500,000")
     print(f"Actual tokens in shard: {total_tokens}")
 
 
-inspect_shard("./data_shards/C4/shard_0.pt")
+inspect_shard("./data/Stack/shard_0_pid4104.pt")
