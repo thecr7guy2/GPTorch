@@ -1,7 +1,6 @@
 from huggingface_hub import snapshot_download
 import os
 
-
 repo_id = "thecr7guy/GPT2fromScratch"
 repo_type = "model"
 local_dir = "/workspace/." 
