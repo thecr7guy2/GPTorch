@@ -28,7 +28,7 @@ def process_shard_worker(dataset_config, cache_dir):
         approx_shard_size_mb = 256 
         max_chunks_per_shard = (approx_shard_size_mb * 1024 * 1024) // (chunk_len * bytes_per_token)
         if max_chunks_per_shard <= 0:
-             max_chunks_per_shard = 1000 # Set a minimum if calculation is too low
+             max_chunks_per_shard = 1000
         print(f"[{os.getpid()}] {dataset_config['name']} - Max chunks per shard: {max_chunks_per_shard}")
 
 

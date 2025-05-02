@@ -107,9 +107,8 @@ class GPT2(torch.nn.Module):
         self.projection_layer = torch.nn.Linear(
             self.d_model, self.vocab_size, bias=False
         )
-        # self.projection_layer = None
         self.projection_layer.weight = self.token_embeddings.weight
-        self.apply(self.init_weights) #initialize weights
+        self.apply(self.init_weights) 
 
 
     def init_weights(self,module):
@@ -132,7 +131,6 @@ class GPT2(torch.nn.Module):
         for i in self.MHA_modules:
             x = i(x)
         x = self.lastln(x)
-        # x = x @ self.token_embeddings.weight.transpose(0, 1)
         x = self.projection_layer(x)
         return x
     
@@ -140,3 +138,5 @@ class GPT2(torch.nn.Module):
         """Generate and return a summary of the model architecture"""
         sample_input = torch.randint(0, 100, (batch_size, seq_len)).to(device)
         return summary(self, input_data=sample_input, depth=4, verbose=0)
+
+

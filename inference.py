@@ -1,8 +1,8 @@
-
 import torch
 from model import GPT2
 import tiktoken
 import yaml
+from safetensors.torch import save_model
 
 
 def load_checkpoint(model, checkpoint_path,device):
@@ -56,7 +56,7 @@ def perform_inference(model,device,prompt_text):
 
     with torch.no_grad(): 
         temp_generated_topk = generated_topk
-        for _ in range(32):
+        for _ in range(64):
             outputs = model(temp_generated_topk)
             next_token_logits = outputs[:, -1, :]
             kth_vals, _ = torch.topk(next_token_logits, 30, dim=-1)
@@ -78,13 +78,12 @@ config = load_config("config.yaml")
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 tokenizer = tiktoken.get_encoding("gpt2")
 model = GPT2(config["n_embd"], config["vocab_size"], config["n_heads"],config["n_layer"],config,config["context_len"]).to(device)
-model = load_checkpoint(model,"checkpoints/epoch_1.pt",device)
-prompt_text = '''I tried so hard, and got so far'''
+model = load_checkpoint(model,"checkpoints/epoch_4.pt",device)
+
+###########################################################
+# save_model(model, "model.safetensors", metadata={"format": "pt", "author": "thecr7guy"})
+#############################################################
+prompt_text = '''What are you doing?'''
 
 top_k = perform_inference(model,device,prompt_text)
 print(f"New models output is: {top_k}")
-
-print("################################################################################")
-model = load_checkpoint2(model,"checkpoints/cc_stories_epoch_9.pt",device)
-top_k = perform_inference(model,device,prompt_text)
-print(f"Old models output is: {top_k}")

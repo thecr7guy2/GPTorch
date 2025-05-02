@@ -67,6 +67,7 @@ instance/
 
 # Scrapy stuff:
 .scrapy
+checkpoints/
 
 # Sphinx documentation
 docs/_build/
@@ -84,8 +85,6 @@ ipython_config.py
 
 wandb/
 data/
-checkpoints/
-
 
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is

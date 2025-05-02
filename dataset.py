@@ -94,9 +94,6 @@ class GPT2Dataset(Dataset):
              raise IndexError("Internal dataset indexing error.")
 
 
-        # Convert the NumPy slice to PyTorch tensors.
-        # Ensure data type is correct (int64 for token IDs).
-        # .astype(np.int64) is important if your NumPy default int is different.
         x = torch.from_numpy(token_seq_np[:-1].astype(np.int64))
         y = torch.from_numpy(token_seq_np[1:].astype(np.int64))
 
