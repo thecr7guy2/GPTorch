@@ -78,7 +78,7 @@ config = load_config("config.yaml")
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 tokenizer = tiktoken.get_encoding("gpt2")
 model = GPT2(config["n_embd"], config["vocab_size"], config["n_heads"],config["n_layer"],config,config["context_len"]).to(device)
-model = load_checkpoint(model,"checkpoints/epoch_4.pt",device)
+model = load_checkpoint(model,"checkpoints/epoch_3.pt",device)
 
 ###########################################################
 # save_model(model, "model.safetensors", metadata={"format": "pt", "author": "thecr7guy"})

@@ -8,14 +8,13 @@ activation: "gelu"    # Activation function: "gelu" or "relu"
 
 # Context/Sequence Configuration
 context_len: 1024     # Maximum sequence length
-
+seq_len: 1024 
 # Training Configuration
 seed: 42              # Random seed for reproducibility
 epochs: 10            # Number of training epochs
 batch_size: 8        # Batch size for each gradient step
 mega_batch_size: 512  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
-
 # Optimizer Configuration
 optimizer: "adamw"    # Optimizer: "adamw" or "adam"y
 max_lr: 6.0e-4        # Maximum learning rate
@@ -24,8 +23,6 @@ beta1: 0.9            # Beta1 for Adam/AdamW
 beta2: 0.95           # Beta2 for Adam/AdamW
 weight_decay: 0.1     # Weight decay
 warmup_steps: 720    # Number of warmup steps
-
-
 # Checkpoint Configuration
 checkpoint_dir: "checkpoints"  # Directory to save checkpoints
 save_every: 1         # Save checkpoint every N epochs
@@ -44,18 +41,12 @@ cache_dir: "./data"
 
 dataset:
   cache_dir: "./data"
-  target_tokens: 5_000_000_000  
+  target_tokens: 20_000_000_000  
   subsets:
-    # - name: "PG19"
-    #   hf_path: "deepmind/pg19"
-    #   split: "train"
-    #   text_field : "text" 
-    #   max_tokens: 300_000_000  
-    #   context_len: 1024
     - name: "Fineweb-EDU"
       hf_path: "HuggingFaceFW/fineweb-edu"
       split: "train"
-      max_tokens: 2_500_000_000  
+      max_tokens: 5_500_000_000  
       text_field : "text" 
       context_len: 1024
       kwargs:
@@ -71,7 +62,7 @@ dataset:
     - name: "OpenWebText"
       hf_path: "Skylion007/openwebtext"
       split: "train"
-      max_tokens: 1_000_000_000 
+      max_tokens: 2_000_000_000 
       text_field : "text" 
       context_len: 1024
 

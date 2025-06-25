@@ -134,9 +134,12 @@ class GPT2(torch.nn.Module):
         x = self.projection_layer(x)
         return x
     
-    def get_model_summary(self, batch_size=1, seq_len=1024, device="cuda"):
-        """Generate and return a summary of the model architecture"""
-        sample_input = torch.randint(0, 100, (batch_size, seq_len)).to(device)
-        return summary(self, input_data=sample_input, depth=4, verbose=0)
+# device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# sample_input = torch.randint(0, 100, (4,1024)).to(device)
+# gpt2 = GPT2(768,50304,12,12,"a")
+# gpt2 = gpt2.to(device)
+# print(summary(model = gpt2, input_data=sample_input, depth=4, verbose=0))
+
+    
 
 
