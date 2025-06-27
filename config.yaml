@@ -11,8 +11,8 @@ context_len: 1024     # Maximum sequence length
 seq_len: 1024 
 # Training Configuration
 seed: 42              # Random seed for reproducibility
-epochs: 10            # Number of training epochs
-batch_size: 8        # Batch size for each gradient step
+epochs: 5            # Number of training epochs
+batch_size: 2       # Batch size for each gradient step
 mega_batch_size: 512  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
 # Optimizer Configuration

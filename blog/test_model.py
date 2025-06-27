@@ -172,10 +172,10 @@ class GPT(nn.Module):
                     total += param.numel()
         return total
     
-# class Config:
-#     def __init__(self, config_dict):
-#         for k, v in config_dict.items():
-#             setattr(self, k, v)
+class Config:
+    def __init__(self, config_dict):
+        for k, v in config_dict.items():
+            setattr(self, k, v)
 
 
 # device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')

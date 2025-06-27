@@ -25,7 +25,7 @@
 
 import torch
 import tiktoken
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 
 
@@ -36,8 +36,9 @@ class GPT2Dataset(Dataset):
 
     def __init__(self, seq_len):
         super(GPT2Dataset, self).__init__()
-        tokenizer = tiktoken.get_encoding("gpt-2")
+        tokenizer = tiktoken.get_encoding("gpt2")
         data = load_dataset("andersonbcdefg/cc-stories-parquet", split="train")
+        data = data[:57500]
         # We do the exact same steps as we did in the above code.
         # We load the the tokenizer and the dataset from the data.
         data = "<|endoftext|>".join(text.strip() for text in data["text"])
@@ -48,10 +49,10 @@ class GPT2Dataset(Dataset):
         num_samples = len(self.tokens) // (seq_len + 1)
         # Given the sequence length we calculate the number of samples we will
         # get from the dataset.
-        self.tokens = self.tokens[: num_samples * (self.seq_len + 1)]
+        self.tokens = self.tokens[: num_samples * (seq_len + 1)]
         # We trim the outer edge of the dataset and retain a round figure.
         self.tokens = torch.tensor(self.tokens, dtype=torch.long).reshape(
-            num_samples, self.seq_len + 1
+            num_samples, seq_len + 1
         )
         # Reshape them.
 
@@ -65,4 +66,17 @@ class GPT2Dataset(Dataset):
     
 
 # train_dataset = GPT2Dataset(1024)
-# train_loader = DataLoader(dataset=1024, batch_size=4, shuffle=True)
+# print(len(train_dataset))
+# train_loader = DataLoader(dataset=train_dataset, batch_size=1, shuffle=True)
+
+# tokenizer = tiktoken.get_encoding("gpt2")
+
+# for x, y in train_loader:
+#     x = x[0]  
+#     y = y[0]
+#     input_text = tokenizer.decode(x.tolist())
+#     target_text = tokenizer.decode(y.tolist())
+#     print(input_text)
+#     print(target_text)
+#     break
+

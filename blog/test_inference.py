@@ -18,14 +18,14 @@ with open("config.yaml", "r") as file:
 config = Config(config)
 sample_input = torch.randint(0, 100, (4,1024)).to(device)
 gpt2 = GPT(config)
-
+gpt2.load_state_dict(torch.load("gpt2_model.pth", map_location='cuda'))
 gpt2 = gpt2.to(device)
 
 gpt2.eval()
 
 tokenizer = tiktoken.get_encoding("gpt2")
 
-prompt = "The portal shimmered and everyone stepped through expecting a normal world but instead the sky cracked open revealing"
+prompt = "I am sai and I like "
 input_ids = torch.tensor(tokenizer.encode(prompt)).to(device).unsqueeze(0)
 
 # for _ in range(20): 
