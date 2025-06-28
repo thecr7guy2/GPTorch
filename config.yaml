@@ -67,4 +67,12 @@ dataset:
       context_len: 1024
 
 
-  
+# n_layer: 4           # Number of transformer layers
+# n_heads: 4          # Number of attention heads
+# n_embd: 256           # Embedding dimension
+# vocab_size: 2048   # Vocabulary size (GPT-2 default)
+# dropout: 0.1          # Dropout probability
+# activation: "gelu"    # Activation function: "gelu" or "relu"
+
+# # Context/Sequence Configuration
+# context_len: 64   

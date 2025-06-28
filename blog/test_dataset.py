@@ -34,14 +34,25 @@ class GPT2Dataset(Dataset):
     Something about GPT2Dataset
     """
 
-    def __init__(self, seq_len):
+    def __init__(self, seq_len, split='train', train_ratio=0.9, total_samples=None):
         super(GPT2Dataset, self).__init__()
         tokenizer = tiktoken.get_encoding("gpt2")
         data = load_dataset("andersonbcdefg/cc-stories-parquet", split="train")
-        data = data[:57500]
+        data = data["text"]
+
+        if total_samples is not None:
+            data = data[:total_samples]
+
+        train_size = int(len(data)*train_ratio)
+
+        if split == "train":
+            data = data[:train_size]
+        else:
+            data = data[train_size:]
+
         # We do the exact same steps as we did in the above code.
         # We load the the tokenizer and the dataset from the data.
-        data = "<|endoftext|>".join(text.strip() for text in data["text"])
+        data = "<|endoftext|>".join(text.strip() for text in data)
         # We then concatenate the data and add a special word at the end of each
         # paragraph.
         self.tokens = tokenizer.encode(data, allowed_special={"<|endoftext|>"})
@@ -55,6 +66,7 @@ class GPT2Dataset(Dataset):
             num_samples, seq_len + 1
         )
         # Reshape them.
+
 
     def __len__(self):
         return len(self.tokens)
