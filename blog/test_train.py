@@ -65,6 +65,7 @@ def main():
             step_loss = loss_fn(logits.reshape(B*T,C),targets.reshape(B*T))
             train_loop.set_postfix(loss=step_loss.item())
             # That is why we reshape them
+            
             step_loss.backward()
             optimizer.step()
 
