@@ -10,6 +10,7 @@ import logging
 import os
 import wandb
 import math
+import time
 
 logging.basicConfig(
     filename="training.log",
@@ -105,9 +106,12 @@ def main():
     gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer)
 
     global_step = start_epoch * len(train_loader)
+    total_tokens_seen = global_step * config.batch_size * config.seq_len
 
     for epoch in range(start_epoch, config.epochs):
         gpt2.train()
+        epoch_start = time.time()
+        epoch_tokens = 0
         train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
         running_train_loss = 0
         for batch_idx, batch in enumerate(train_loop):
@@ -126,6 +130,8 @@ def main():
             step_loss.backward()
             optimizer.step()
             running_train_loss = running_train_loss + step_loss.item()
+            epoch_tokens = epoch_tokens + (B * T)
+            total_tokens_seen = total_tokens_seen + (B * T)
             global_step += 1
             if config.wandb.project_name:
                 if global_step % config.wandb.log_interval == 0:
@@ -137,6 +143,9 @@ def main():
                                 running_train_loss / (batch_idx + 1)
                             ),
                             "lr": optimizer.param_groups[0]["lr"],
+                            "train/total_tokens_seen": total_tokens_seen,
+                            "train/throughput": epoch_tokens
+                            / (time.time() - epoch_start),
                         },
                         step=global_step,
                     )
