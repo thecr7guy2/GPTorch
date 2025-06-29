@@ -8,6 +8,8 @@ import yaml
 from tqdm import tqdm
 import logging
 import os
+import wandb
+import math
 
 logging.basicConfig(
     filename="training.log",
@@ -63,6 +65,15 @@ def main():
     # Send the model to GPU
     logging.info(f"Loaded model")
 
+    if config.wandb.project_name:
+        wandb.init(
+            project=config.wandb.project_name,
+            entity=config.wandb.entity,
+            config=config.__dict__,
+        )
+        wandb.run.name = f"gpt_train-{wandb.run.id}"
+        wandb.watch(gpt2, log="all" if config.wandb.log_gradients else "parameters")
+
     train_dataset = GPT2Dataset(
         config.seq_len, split="train", train_ratio=0.9, total_samples=5750
     )
@@ -73,15 +84,11 @@ def main():
         dataset=train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True,
     )
     valid_loader = DataLoader(
         dataset=valid_dataset,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=4,
-        pin_memory=True,
     )
 
     logging.info(f"Loaded Data")
@@ -97,12 +104,12 @@ def main():
 
     gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer)
 
+    global_step = start_epoch * len(train_loader)
+
     for epoch in range(start_epoch, config.epochs):
         gpt2.train()
         train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
-
         running_train_loss = 0
-
         for batch_idx, batch in enumerate(train_loop):
             inputs, targets = batch
             inputs = inputs.to(device)
@@ -118,8 +125,21 @@ def main():
             # That is why we reshape them
             step_loss.backward()
             optimizer.step()
-
             running_train_loss = running_train_loss + step_loss.item()
+            global_step += 1
+            if config.wandb.project_name:
+                if global_step % config.wandb.log_interval == 0:
+                    wandb.log(
+                        {
+                            "train/step_loss": step_loss.item(),
+                            "train/avg_loss": running_train_loss / (batch_idx + 1),
+                            "train/perplexity": math.exp(
+                                running_train_loss / (batch_idx + 1)
+                            ),
+                            "lr": optimizer.param_groups[0]["lr"],
+                        },
+                        step=global_step,
+                    )
 
         avg_train_loss = running_train_loss / len(train_loader)
         train_loop.set_postfix(loss=avg_train_loss)
@@ -141,6 +161,16 @@ def main():
                 running_val_loss = running_val_loss + loss.item()
 
         avg_val_loss = running_val_loss / len(valid_loader)
+        if config.wandb.project_name:
+            wandb.log(
+                {
+                    "validation/avg_loss": avg_val_loss,
+                    "validation/perplexity": math.exp(avg_val_loss),
+                    "epoch": epoch,
+                },
+                step=global_step,
+            )
+
         logging.info(f"Epoch {epoch+1} Average Val Loss: {avg_val_loss:.4f}")
 
         print(

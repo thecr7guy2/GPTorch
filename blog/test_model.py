@@ -175,10 +175,15 @@ class GPT(nn.Module):
 class Config:
     def __init__(self, config_dict):
         for k, v in config_dict.items():
-            setattr(self, k, v)
+            setattr(self, k, Config(v) if isinstance(v, dict) else v)
 
 
-# device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# if torch.cuda.is_available():
+#     device = torch.device("cuda:0")
+# elif torch.backends.mps.is_available():
+#     device = torch.device("mps")
+# else:
+#     device = torch.device("cpu")
 # with open("config.yaml", "r") as file:
 #     config = yaml.safe_load(file)
 # config = Config(config)

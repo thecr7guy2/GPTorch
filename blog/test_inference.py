@@ -12,20 +12,26 @@ class Config:
             setattr(self, k, v)
 
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+if torch.cuda.is_available():
+    device = torch.device("cuda:0")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 config = Config(config)
 sample_input = torch.randint(0, 100, (4,1024)).to(device)
 gpt2 = GPT(config)
-gpt2.load_state_dict(torch.load("gpt2_model.pth", map_location='cuda'))
+gpt2.load_state_dict(torch.load("checkpoint.pth", map_location=device)["model_state_dict"])
 gpt2 = gpt2.to(device)
 
 gpt2.eval()
 
 tokenizer = tiktoken.get_encoding("gpt2")
 
-prompt = "I am sai and I like "
+prompt = "I am sai and I like"
 input_ids = torch.tensor(tokenizer.encode(prompt)).to(device).unsqueeze(0)
 
 # for _ in range(20): 

@@ -1,14 +1,14 @@
 # Model Architecture Configuration
-n_layer: 12           # Number of transformer layers
-n_heads: 12           # Number of attention heads
-n_embd: 768           # Embedding dimension
-vocab_size: 50304   # Vocabulary size (GPT-2 default)
+# n_layer: 12           # Number of transformer layers
+# n_heads: 12           # Number of attention heads
+# n_embd: 768           # Embedding dimension
+# vocab_size: 50304   # Vocabulary size (GPT-2 default)
 dropout: 0.1          # Dropout probability
 activation: "gelu"    # Activation function: "gelu" or "relu"
 
 # Context/Sequence Configuration
-context_len: 1024     # Maximum sequence length
-seq_len: 1024 
+# context_len: 1024     # Maximum sequence length
+# seq_len: 1024 
 # Training Configuration
 seed: 42              # Random seed for reproducibility
 epochs: 5            # Number of training epochs
@@ -28,14 +28,11 @@ checkpoint_dir: "checkpoints"  # Directory to save checkpoints
 save_every: 1         # Save checkpoint every N epochs
 
 # Logging Configuration
-log_interval: 64     
+   
 log_model_summary: true  
 generate_interval: 5000
 sample_max_tokens: 100  
 
-# Weights & Biases Configuration
-wandb_entity: "training-transformers-vast"
-wandb_project: "gpt2-sai-2" 
 
 cache_dir: "./data"
 
@@ -67,12 +64,17 @@ dataset:
       context_len: 1024
 
 
-# n_layer: 4           # Number of transformer layers
-# n_heads: 4          # Number of attention heads
-# n_embd: 256           # Embedding dimension
-# vocab_size: 2048   # Vocabulary size (GPT-2 default)
-# dropout: 0.1          # Dropout probability
-# activation: "gelu"    # Activation function: "gelu" or "relu"
+n_layer: 4           # Number of transformer layers
+n_heads: 4          # Number of attention heads
+n_embd: 256           # Embedding dimension
+vocab_size: 2048   # Vocabulary size (GPT-2 default)
+dropout: 0.1          # Dropout probability
+activation: "gelu"    # Activation function: "gelu" or "relu"
 
-# # Context/Sequence Configuration
-# context_len: 64   
+# Context/Sequence Configuration
+seq_len: 64
+wandb:
+  project_name: "gpt-2-small-cc-stories"
+  entity: "training-transformers-vast"
+  log_interval: 1000
+  log_gradients: true
