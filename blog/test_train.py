@@ -12,6 +12,7 @@ import wandb
 import math
 import time
 
+
 logging.basicConfig(
     filename="training.log",
     level=logging.INFO,
@@ -116,11 +117,13 @@ def main():
         running_train_loss = 0
         for batch_idx, batch in enumerate(train_loop):
             inputs, targets = batch
+            
             inputs = inputs.to(device)
             targets = targets.to(device)
             # input.shape => (batch_size,seq_len), target.shape => (batch_size,seq_len)
             optimizer.zero_grad()
             logits = gpt2(inputs)
+            # import code; code.interact(local=locals())
             B, T, C = logits.shape
             # logits.shape => (batch_size,seq_len,vocab_size)
             # Now there is a problem - The nn.CrossEntropyLoss Function accepts inputs in form (examples,classes) and outputs (examples)

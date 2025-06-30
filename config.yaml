@@ -74,7 +74,8 @@ activation: "gelu"    # Activation function: "gelu" or "relu"
 # Context/Sequence Configuration
 seq_len: 64
 wandb:
-  project_name: "gpt-2-small-cc-stories"
+  # project_name: "gpt-2-small-cc-stories"
+  project_name:
   entity: "training-transformers-vast"
   log_interval: 1000
   log_gradients: true
