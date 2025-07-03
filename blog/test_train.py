@@ -19,7 +19,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-
 def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth"):
     checkpoint = {
         "epoch": epoch,
@@ -41,15 +40,15 @@ def load_checkpoint(model, optimizer, path="checkpoint.pth"):
     else:
         return model, optimizer, 0
 
-
 def main():
+
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 
     if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+        device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
@@ -77,10 +76,10 @@ def main():
         wandb.watch(gpt2, log="all" if config.wandb.log_gradients else "parameters")
 
     train_dataset = GPT2Dataset(
-        config.seq_len, split="train", train_ratio=0.9, total_samples=5750
+        config.seq_len, split="train", train_ratio=0.9, total_samples=57500
     )
     valid_dataset = GPT2Dataset(
-        config.seq_len, split="valid", train_ratio=0.9, total_samples=5750
+        config.seq_len, split="valid", train_ratio=0.9, total_samples=57500
     )
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -116,8 +115,8 @@ def main():
         train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
         running_train_loss = 0
         for batch_idx, batch in enumerate(train_loop):
+            step_start = time.time()
             inputs, targets = batch
-            
             inputs = inputs.to(device)
             targets = targets.to(device)
             # input.shape => (batch_size,seq_len), target.shape => (batch_size,seq_len)
@@ -132,10 +131,14 @@ def main():
             # That is why we reshape them
             step_loss.backward()
             optimizer.step()
+            if device == torch.device("mps"):
+                torch.mps.synchronize()
+            elif device == torch.device("cuda"):
+                torch.cuda.synchronize()
+            step_end = time.time()
             running_train_loss = running_train_loss + step_loss.item()
             epoch_tokens = epoch_tokens + (B * T)
             total_tokens_seen = total_tokens_seen + (B * T)
-            global_step += 1
             if config.wandb.project_name:
                 if global_step % config.wandb.log_interval == 0:
                     wandb.log(
@@ -147,16 +150,25 @@ def main():
                             ),
                             "lr": optimizer.param_groups[0]["lr"],
                             "train/total_tokens_seen": total_tokens_seen,
-                            "train/throughput": epoch_tokens
-                            / (time.time() - epoch_start),
+                            "train/time_per_step": (step_end - step_start) * 1000
+                        },
+                        step=global_step,
+                    )
+            global_step += 1
+
+        avg_train_loss = running_train_loss / len(train_loader)
+        throughput = epoch_tokens/ (time.time() - epoch_start)
+        train_loop.set_postfix(loss=avg_train_loss)
+        print(f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}, Throughput :{throughput}" )
+        logging.info(f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}")
+        if config.wandb.project_name:
+            wandb.log(
+                        {
+                            "train/average_throughput": throughput
                         },
                         step=global_step,
                     )
 
-        avg_train_loss = running_train_loss / len(train_loader)
-        train_loop.set_postfix(loss=avg_train_loss)
-        logging.info(f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}")
-        # save_checkpoint(gpt2, optimizer, epoch)
 
         #########################################
         # Begin Validation
