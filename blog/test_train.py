@@ -46,6 +46,7 @@ def main():
     torch.cuda.manual_seed_all(42)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
+    torch.set_float32_matmul_precision("high")
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -76,10 +77,10 @@ def main():
         wandb.watch(gpt2, log="all" if config.wandb.log_gradients else "parameters")
 
     train_dataset = GPT2Dataset(
-        config.seq_len, split="train", train_ratio=0.9, total_samples=57500
+        config.seq_len, split="train", train_ratio=0.9, total_samples=5750
     )
     valid_dataset = GPT2Dataset(
-        config.seq_len, split="valid", train_ratio=0.9, total_samples=57500
+        config.seq_len, split="valid", train_ratio=0.9, total_samples=5750
     )
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -139,6 +140,7 @@ def main():
             running_train_loss = running_train_loss + step_loss.item()
             epoch_tokens = epoch_tokens + (B * T)
             total_tokens_seen = total_tokens_seen + (B * T)
+            print((B*T)/(step_start-step_end))
             if config.wandb.project_name:
                 if global_step % config.wandb.log_interval == 0:
                     wandb.log(
@@ -150,7 +152,8 @@ def main():
                             ),
                             "lr": optimizer.param_groups[0]["lr"],
                             "train/total_tokens_seen": total_tokens_seen,
-                            "train/time_per_step": (step_end - step_start) * 1000
+                            "train/time_per_step": (step_end - step_start) * 1000,
+                            "train/step_throughput" : (B*T)/(step_start-step_end)
                         },
                         step=global_step,
                     )
