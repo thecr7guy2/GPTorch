@@ -29,16 +29,16 @@ def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth"):
     logging.info(f"Checkpoint saved at epoch {epoch}")
 
 
-def load_checkpoint(model, optimizer, path="checkpoint.pth"):
-    if os.path.isfile(path):
-        checkpoint = torch.load(path)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = checkpoint["epoch"] + 1
-        logging.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-        return model, optimizer, start_epoch
-    else:
-        return model, optimizer, 0
+# def load_checkpoint(model, optimizer, path="checkpoint.pth"):
+#     if os.path.isfile(path):
+#         checkpoint = torch.load(path)
+#         model.load_state_dict(checkpoint["model_state_dict"])
+#         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+#         start_epoch = checkpoint["epoch"] + 1
+#         logging.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+#         return model, optimizer, start_epoch
+#     else:
+#         return model, optimizer, 0
 
 def main():
 
@@ -46,7 +46,7 @@ def main():
     torch.cuda.manual_seed_all(42)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
-    torch.set_float32_matmul_precision("high")
+    
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -64,8 +64,11 @@ def main():
     gpt2 = GPT(config)
     # Load the model
     gpt2 = gpt2.to(device)
+
+    gpt2 = torch.compile(gpt2)
+
     # Send the model to GPU
-    logging.info(f"Loaded model")
+    logging.info(f"compiled and Loaded model")
 
     if config.wandb.project_name:
         wandb.init(
@@ -77,10 +80,10 @@ def main():
         wandb.watch(gpt2, log="all" if config.wandb.log_gradients else "parameters")
 
     train_dataset = GPT2Dataset(
-        config.seq_len, split="train", train_ratio=0.9, total_samples=5750
+        config.seq_len, split="train", train_ratio=0.9, total_samples=10750
     )
     valid_dataset = GPT2Dataset(
-        config.seq_len, split="valid", train_ratio=0.9, total_samples=5750
+        config.seq_len, split="valid", train_ratio=0.9, total_samples=10750
     )
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -92,6 +95,7 @@ def main():
         batch_size=config.batch_size,
         shuffle=False,
     )
+    torch.set_float32_matmul_precision("high")
 
     logging.info(f"Loaded Data")
 
@@ -104,7 +108,8 @@ def main():
 
     loss_fn = nn.CrossEntropyLoss()
 
-    gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer)
+    # gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer)
+    start_epoch = 0
 
     global_step = start_epoch * len(train_loader)
     total_tokens_seen = global_step * config.batch_size * config.seq_len
@@ -122,12 +127,13 @@ def main():
             targets = targets.to(device)
             # input.shape => (batch_size,seq_len), target.shape => (batch_size,seq_len)
             optimizer.zero_grad()
-            logits = gpt2(inputs)
-            # import code; code.interact(local=locals())
-            B, T, C = logits.shape
-            # logits.shape => (batch_size,seq_len,vocab_size)
-            # Now there is a problem - The nn.CrossEntropyLoss Function accepts inputs in form (examples,classes) and outputs (examples)
-            step_loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
+            with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
+                logits = gpt2(inputs)
+                B, T, C = logits.shape
+                # logits.shape => (batch_size,seq_len,vocab_size)
+                # Now there is a problem - The nn.CrossEntropyLoss Function accepts inputs in form (examples,classes) and outputs (examples)
+                step_loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
+
             train_loop.set_postfix(loss=step_loss.item())
             # That is why we reshape them
             step_loss.backward()
@@ -140,7 +146,6 @@ def main():
             running_train_loss = running_train_loss + step_loss.item()
             epoch_tokens = epoch_tokens + (B * T)
             total_tokens_seen = total_tokens_seen + (B * T)
-            print((B*T)/(step_start-step_end))
             if config.wandb.project_name:
                 if global_step % config.wandb.log_interval == 0:
                     wandb.log(
@@ -153,7 +158,7 @@ def main():
                             "lr": optimizer.param_groups[0]["lr"],
                             "train/total_tokens_seen": total_tokens_seen,
                             "train/time_per_step": (step_end - step_start) * 1000,
-                            "train/step_throughput" : (B*T)/(step_start-step_end)
+                            "train/step_throughput" : (B*T)/(step_end-step_start)
                         },
                         step=global_step,
                     )

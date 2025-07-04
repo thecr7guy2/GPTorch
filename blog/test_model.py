@@ -32,8 +32,8 @@ class MultiHeadedAttention(nn.Module):
         # self.c_attn.weights.shape -> (768,2304)
         self.c_proj = nn.Linear(config.n_embd,config.n_embd)
         # self.c_proj.weights.shape -> (768,768)
-        self.register_buffer("bias", torch.tril(torch.ones(config.seq_len, config.seq_len))
-                               .view(1, 1, config.seq_len, config.seq_len))
+        # self.register_buffer("bias", torch.tril(torch.ones(config.seq_len, config.seq_len))
+        #                        .view(1, 1, config.seq_len, config.seq_len))
 
     def forward(self, x):
 		# Here the input (x) is (B,T,C) <-> (4,1024,768)
@@ -58,7 +58,7 @@ class MultiHeadedAttention(nn.Module):
         # kprime.shape -> (4,12,1024,64)
         ####################################################
         # Now we calculate the attention scores.
-        attention_scores = (qprime @ kprime.transpose(2,3))/(math.sqrt(qprime.shape[-1]))
+        # attention_scores = (qprime @ kprime.transpose(2,3))/(math.sqrt(qprime.shape[-1]))
         # (4,12,1024,64) * (4,12,64,1024) => (4,12,1024,1024)
         # Now we have attention scores of each 12 heads - Attention Scores is nothing but a square matrix.
         # For each 1024 tokens in the sequence we create a square matrix and this gives us how much attention 
@@ -67,14 +67,22 @@ class MultiHeadedAttention(nn.Module):
         # We can now use this attention scores to visualize if the transformer is working correctly or not.
         ##############################################
         # Now we make this attention causal - Means we make sure that the tokens cannot see the future tokens.
-        attention_scores_masked = attention_scores.masked_fill(self.bias[:,:,:x.shape[1],:x.shape[1]]==0,float("-inf"))
-        attention_scores = nn.functional.softmax(attention_scores_masked,dim=-1)
+        # attention_scores_masked = attention_scores.masked_fill(self.bias[:,:,:x.shape[1],:x.shape[1]]==0,float("-inf"))
+        # attention_scores = nn.functional.softmax(attention_scores_masked,dim=-1)
         # attention_scores -> (B,nh,T,T) -> (4,12,1024,1024)
-        y = attention_scores @ vprime 
+        # y = attention_scores @ vprime 
         # (B,nh,T,T) * (B,nh,T,n_emb//nh)
         # (4,12,1024,1024) * (4,12,1024,64)
         # y.shape => (4,12,1024,64)
         # Now we have the context vector per head but lets reassemble them and get the overall context vector
+        #####################################################
+
+        ####################################################
+                    #Flash Attention
+        ####################################################
+        y = nn.functional.scaled_dot_product_attention(qprime, kprime, vprime, is_causal=True)
+        #####################################################
+
         y = y.transpose(1,2).contiguous().view(x.shape[0],x.shape[1],x.shape[2])
         # (4,12,1024,64) => (4,1024,12,64) => (4,1024,768)
         y = self.c_proj(y)

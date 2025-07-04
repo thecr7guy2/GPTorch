@@ -1,18 +1,18 @@
 # Model Architecture Configuration
-# n_layer: 12           # Number of transformer layers
-# n_heads: 12           # Number of attention heads
-# n_embd: 768           # Embedding dimension
-# vocab_size: 50304   # Vocabulary size (GPT-2 default)
+n_layer: 12           # Number of transformer layers
+n_heads: 12           # Number of attention heads
+n_embd: 768           # Embedding dimension
+vocab_size: 50304   # Vocabulary size (GPT-2 default)
 dropout: 0.1          # Dropout probability
 activation: "gelu"    # Activation function: "gelu" or "relu"
 
 # Context/Sequence Configuration
 # context_len: 1024     # Maximum sequence length
-# seq_len: 1024 
+seq_len: 1024 
 # Training Configuration
 seed: 42              # Random seed for reproducibility
 epochs: 5            # Number of training epochs
-batch_size: 2       # Batch size for each gradient step
+batch_size: 8       # Batch size for each gradient step
 mega_batch_size: 512  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
 # Optimizer Configuration
@@ -64,18 +64,17 @@ dataset:
       context_len: 1024
 
 
-n_layer: 4           # Number of transformer layers
-n_heads: 4          # Number of attention heads
-n_embd: 256           # Embedding dimension
-vocab_size: 50304   # Vocabulary size (GPT-2 default)
-dropout: 0.1          # Dropout probability
-activation: "gelu"    # Activation function: "gelu" or "relu"
+# n_layer: 4           # Number of transformer layers
+# n_heads: 4          # Number of attention heads
+# n_embd: 256           # Embedding dimension
+# vocab_size: 50304   # Vocabulary size (GPT-2 default)
+# dropout: 0.1          # Dropout probability
+# activation: "gelu"    # Activation function: "gelu" or "relu"
 
-# Context/Sequence Configuration
-seq_len: 64
+# # Context/Sequence Configuration
+# seq_len: 64
 wandb:
   project_name: "gpt-2-small-cc-stories"
-  project_name:
   entity: "training-transformers-vast"
-  log_interval: 1000
+  log_interval: 10
   log_gradients: true
