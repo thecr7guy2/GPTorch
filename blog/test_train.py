@@ -19,6 +19,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
+
 def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth"):
     checkpoint = {
         "epoch": epoch,
@@ -40,13 +41,29 @@ def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth"):
 #     else:
 #         return model, optimizer, 0
 
+max_lr = 6e-4
+min_lr = 0.1 * max_lr
+warm_steps = 10000  # we go with random numbers here for now
+max_steps = 263636  # we go with random numbers here for now
+
+
+def get_lr(step):
+    if step < warm_steps:
+        return max_lr * (step + 1) / warm_steps
+    if step > max_steps:
+        return min_lr
+
+    decay_ratio = (step - warm_steps) / (max_steps - warm_steps)
+    coeff = 0.5 * (1 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+
 def main():
 
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
-    
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -104,79 +121,96 @@ def main():
         lr=3e-4,
         betas=(config.beta1, config.beta2),
         weight_decay=config.weight_decay,
+        fused=True,
     )
 
     loss_fn = nn.CrossEntropyLoss()
+    total_batch_size = 524288
+    grad_accum_steps = total_batch_size // (config.batch_size * config.seq_len)
+    num_batches_to_process = (len(train_loader) // grad_accum_steps) * grad_accum_steps
 
-    # gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer)
+    # gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer) #TODO uncomment this and comment next line
     start_epoch = 0
-
-    global_step = start_epoch * len(train_loader)
+    global_step = start_epoch * (num_batches_to_process // grad_accum_steps)
     total_tokens_seen = global_step * config.batch_size * config.seq_len
+
+    optimizer.zero_grad()
 
     for epoch in range(start_epoch, config.epochs):
         gpt2.train()
         epoch_start = time.time()
         epoch_tokens = 0
         train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
+        step_loss = 0
         running_train_loss = 0
         for batch_idx, batch in enumerate(train_loop):
-            step_start = time.time()
+            if batch_idx >= num_batches_to_process:
+                break
+            if batch_idx % grad_accum_steps == 0:
+                step_start = time.time()
             inputs, targets = batch
             inputs = inputs.to(device)
             targets = targets.to(device)
-            # input.shape => (batch_size,seq_len), target.shape => (batch_size,seq_len)
-            optimizer.zero_grad()
-            with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
+            #######################
+            #######################
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = gpt2(inputs)
-                B, T, C = logits.shape
-                # logits.shape => (batch_size,seq_len,vocab_size)
-                # Now there is a problem - The nn.CrossEntropyLoss Function accepts inputs in form (examples,classes) and outputs (examples)
-                step_loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
-
-            train_loop.set_postfix(loss=step_loss.item())
-            # That is why we reshape them
-            step_loss.backward()
-            optimizer.step()
-            if device == torch.device("mps"):
-                torch.mps.synchronize()
-            elif device == torch.device("cuda"):
+            B, T, C = logits.shape
+            micro_step_loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
+            micro_step_loss = micro_step_loss / grad_accum_steps
+            step_loss = step_loss + micro_step_loss.item()
+            micro_step_loss.backward()
+            #######################
+            #######################
+            if (batch_idx + 1) % grad_accum_steps == 0:
+                grad_norm = nn.utils.clip_grad_norm_(gpt2.parameters(), 1.0)
+                current_lr = get_lr(global_step)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = current_lr
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
                 torch.cuda.synchronize()
-            step_end = time.time()
-            running_train_loss = running_train_loss + step_loss.item()
-            epoch_tokens = epoch_tokens + (B * T)
-            total_tokens_seen = total_tokens_seen + (B * T)
-            if config.wandb.project_name:
-                if global_step % config.wandb.log_interval == 0:
+                step_end = time.time()
+                running_train_loss = running_train_loss + step_loss
+                train_loop.set_postfix(loss=step_loss)
+                epoch_tokens = epoch_tokens + (B * T * grad_accum_steps)
+                total_tokens_seen = total_tokens_seen + (B * T * grad_accum_steps)
+                if config.wandb.project_name:
                     wandb.log(
                         {
-                            "train/step_loss": step_loss.item(),
-                            "train/avg_loss": running_train_loss / (batch_idx + 1),
+                            "train/step_loss": step_loss,
+                            "train/avg_loss": running_train_loss
+                            / ((batch_idx + 1) // grad_accum_steps),
                             "train/perplexity": math.exp(
-                                running_train_loss / (batch_idx + 1)
+                                running_train_loss
+                                / ((batch_idx + 1) // grad_accum_steps)
                             ),
-                            "lr": optimizer.param_groups[0]["lr"],
+                            "train/grad_norm": grad_norm.item(),
+                            "train/lr": current_lr,
                             "train/total_tokens_seen": total_tokens_seen,
                             "train/time_per_step": (step_end - step_start) * 1000,
-                            "train/step_throughput" : (B*T)/(step_end-step_start)
+                            "train/step_throughput": (B * T * grad_accum_steps)
+                            / (step_end - step_start),
                         },
                         step=global_step,
                     )
-            global_step += 1
+                step_loss = 0
+                global_step = global_step + 1
 
-        avg_train_loss = running_train_loss / len(train_loader)
-        throughput = epoch_tokens/ (time.time() - epoch_start)
+        avg_train_loss = running_train_loss / (
+            num_batches_to_process / grad_accum_steps
+        )
+        throughput = epoch_tokens / (time.time() - epoch_start)
         train_loop.set_postfix(loss=avg_train_loss)
-        print(f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}, Throughput :{throughput}" )
+        print(
+            f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}, Throughput :{throughput}"
+        )
         logging.info(f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}")
         if config.wandb.project_name:
             wandb.log(
-                        {
-                            "train/average_throughput": throughput
-                        },
-                        step=global_step,
-                    )
-
+                {"train/average_throughput": throughput},
+                step=global_step,
+            )
 
         #########################################
         # Begin Validation
@@ -187,7 +221,8 @@ def main():
         with torch.no_grad():
             for inputs, targets in valid_loader:
                 inputs, targets = inputs.to(device), targets.to(device)
-                logits = gpt2(inputs)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    logits = gpt2(inputs)
                 B, T, C = logits.shape
                 loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
                 running_val_loss = running_val_loss + loss.item()
