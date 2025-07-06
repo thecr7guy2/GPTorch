@@ -11,30 +11,23 @@ activation: "gelu"    # Activation function: "gelu" or "relu"
 seq_len: 1024 
 # Training Configuration
 seed: 42              # Random seed for reproducibility
-epochs: 12            # Number of training epochs
+epochs: 10            # Number of training epochs
 batch_size: 8       # Batch size for each gradient step
 total_batch_size: 524288  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
-# Optimizer Configuration
-optimizer: "adamw"    # Optimizer: "adamw" or "adam"y
+
 max_lr: 6.0e-4        # Maximum learning rate
 min_lr: 6.0e-5        # Minimum learning rate
 beta1: 0.9            # Beta1 for Adam/AdamW
 beta2: 0.95           # Beta2 for Adam/AdamW
 weight_decay: 0.1     # Weight decay
 warmup_steps: 720    # Number of warmup steps
-# Checkpoint Configuration
-checkpoint_dir: "checkpoints"  # Directory to save checkpoints
-save_every: 1         # Save checkpoint every N epochs
 
 # Logging Configuration
    
-log_model_summary: true  
-generate_interval: 5000
-sample_max_tokens: 100  
+generate_interval: 50
+log_interval : 5
 
-
-cache_dir: "./data"
 
 dataset:
   cache_dir: "./data"
@@ -63,16 +56,6 @@ dataset:
       text_field : "text" 
       context_len: 1024
 
-
-# n_layer: 4           # Number of transformer layers
-# n_heads: 4          # Number of attention heads
-# n_embd: 256           # Embedding dimension
-# vocab_size: 50304   # Vocabulary size (GPT-2 default)
-# dropout: 0.1          # Dropout probability
-# activation: "gelu"    # Activation function: "gelu" or "relu"
-
-# # Context/Sequence Configuration
-# seq_len: 64
 wandb:
   project_name: "gpt-2-small-cc-stories"
   entity: "training-transformers-vast"

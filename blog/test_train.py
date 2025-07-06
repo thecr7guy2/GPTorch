@@ -100,8 +100,11 @@ def cleanup_ddp():
 
 
 def main():
+
     rank, world_size, local_rank = setup_ddp()
     device = torch.device(f"cuda:{local_rank}")
+
+    torch._dynamo.config.capture_scalar_outputs = True
 
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
@@ -115,9 +118,6 @@ def main():
 
     gpt2 = GPT(config)
     gpt2 = gpt2.to(device)
-    gpt2 = DDP(gpt2, device_ids=[local_rank], output_device=local_rank)
-    gpt2 = torch.compile(gpt2)  # TODO research what fullggraph =True does
-    tokenizer = tiktoken.get_encoding("gpt2")
 
     if config.wandb.project_name:
         if rank == 0:
@@ -127,10 +127,12 @@ def main():
                 config=config.__dict__,
             )
             wandb.run.name = f"gpt_train-{wandb.run.id}"
-            wandb.watch(
-                gpt2.module, log="all" if config.wandb.log_gradients else "parameters"
-            )
             gen_table = wandb.Table(columns=["step", "prompt", "output"])
+
+    gpt2 = DDP(gpt2, device_ids=[local_rank], output_device=local_rank)
+    gpt2 = torch.compile(gpt2)  # TODO research what fullggraph =True does
+    tokenizer = tiktoken.get_encoding("gpt2")
+
 
     train_dataset = GPT2Dataset(
         config.seq_len, split="train", train_ratio=0.9
@@ -211,7 +213,7 @@ def main():
         ##########################################
         epoch_start = time.time()
         epoch_tokens = 0
-        step_loss = torch.tensor(0.0, device=device)
+        step_loss = 0.0
         running_train_loss = 0.0
         optimizer.zero_grad(set_to_none=True)
         ##########################################
@@ -221,27 +223,25 @@ def main():
             ): 
                 break
             ##########################################
-
-            if (batch_idx +1) % grad_accum_steps == 0:
-                if rank == 0:
-                    model_to_generate = (
+            if (rank == 0) and ((global_step + 1) % config.generate_interval == 0):
+                model_to_generate = (
                         gpt2.module if isinstance(gpt2, DDP) else gpt2
                     )
-                    generated_text = generate_sample_text(
+                generated_text = generate_sample_text(
                         model_to_generate,
                         device,
                         tokenizer,
                     )
-                    temp_table = wandb.Table(
+                temp_table = wandb.Table(
                         columns=gen_table.columns, data=gen_table.data
                     )
-                    temp_table.add_data(
+                temp_table.add_data(
                         global_step,
                         "In a world where humans have unlimited power, Sai was",
                         generated_text,
                     )
-                    wandb.log({"generation/samples": temp_table}, step=global_step)
-                    gen_table = temp_table
+                wandb.log({"generation/samples": temp_table}, step=global_step)
+                gen_table = temp_table
 
                 gpt2.train()
             ##########################################
@@ -282,9 +282,8 @@ def main():
                     B * T * grad_accum_steps * world_size
                 )
                 ############################################
-                if rank == 0:
-                    if config.wandb.project_name:
-                        wandb.log(
+                if (rank == 0) and (config.wandb.project_name) and ((global_step + 1)% config.log_interval == 0):
+                    wandb.log(
                             {
                                 "train/step_loss": step_loss.item(),
                                 "train/avg_loss": running_train_loss
