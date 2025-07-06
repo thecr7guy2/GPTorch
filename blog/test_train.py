@@ -229,8 +229,8 @@ def main():
                     )
                     generated_text = generate_sample_text(
                         model_to_generate,
-                        tokenizer,
                         device,
+                        tokenizer,
                     )
                     temp_table = wandb.Table(
                         columns=gen_table.columns, data=gen_table.data

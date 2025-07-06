@@ -11,7 +11,7 @@ activation: "gelu"    # Activation function: "gelu" or "relu"
 seq_len: 1024 
 # Training Configuration
 seed: 42              # Random seed for reproducibility
-epochs: 5            # Number of training epochs
+epochs: 12            # Number of training epochs
 batch_size: 8       # Batch size for each gradient step
 total_batch_size: 524288  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
