@@ -223,7 +223,7 @@ def main():
             ): 
                 break
             ##########################################
-            if (rank == 0) and ((global_step + 1) % config.generate_interval == 0):
+            if (rank == 0) and ((batch_idx + 1) % config.generate_interval == 0):
                 model_to_generate = (
                         gpt2.module if isinstance(gpt2, DDP) else gpt2
                     )
