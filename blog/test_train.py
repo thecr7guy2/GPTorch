@@ -114,9 +114,9 @@ def main():
     config = Config(config)
 
     gpt2 = GPT(config)
-    gpt2.to(device)
-    gpt2 = torch.compile(gpt2)  # TODO research what fullggraph =True does
+    gpt2 = gpt2.to(device)
     gpt2 = DDP(gpt2, device_ids=[local_rank], output_device=local_rank)
+    gpt2 = torch.compile(gpt2)  # TODO research what fullggraph =True does
     tokenizer = tiktoken.get_encoding("gpt2")
 
     if config.wandb.project_name:
