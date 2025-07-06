@@ -1,3 +1,3 @@
 # GPTorch
 Implementation of GPT from Scratch.
-install datasets,torchinfo,wandb,
+install datasets,torchinfo,wandb,tiktoken

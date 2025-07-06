@@ -4,6 +4,7 @@ import math
 import time
 import yaml
 from tqdm import tqdm
+import tiktoken
 
 import torch
 import torch.nn as nn
@@ -50,6 +51,37 @@ def get_lr(step, total_training_steps, max_lr):
     coeff = 0.5 * (1 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
+def generate_sample_text(
+    model,
+    device,
+    tokenizer,
+    prompt_text="In a world where humans have unlimited power, Sai was",
+    max_tokens=100,
+    top_k=50,
+    ):
+    
+    model.eval()
+    input_ids = (
+        torch.tensor(tokenizer.encode(prompt_text), dtype=torch.long)
+        .unsqueeze(0)
+        .to(device)
+    )
+
+    with torch.no_grad():
+        generated = input_ids
+        for _ in range(max_tokens):
+            outputs = model(generated)
+            next_token_logits = outputs[:, -1, :]
+
+            logits_top_k, top_k_indices = torch.topk(next_token_logits, top_k, dim=-1)
+            probs = nn.functional.softmax(logits_top_k, dim=-1)
+            next_token = top_k_indices[0, torch.multinomial(probs[0], 1)].unsqueeze(0)
+
+            generated = torch.cat((generated, next_token), dim=1)
+
+        generated_text = tokenizer.decode(generated[0].tolist())
+
+    return generated_text
 
 def setup_ddp():
     """Initialize the distributed environment"""
@@ -85,6 +117,7 @@ def main():
     gpt2.to(device)
     gpt2 = torch.compile(gpt2)  # TODO research what fullggraph =True does
     gpt2 = DDP(gpt2, device_ids=[local_rank], output_device=local_rank)
+    tokenizer = tiktoken.get_encoding("gpt2")
 
     if config.wandb.project_name:
         if rank == 0:
@@ -97,12 +130,13 @@ def main():
             wandb.watch(
                 gpt2.module, log="all" if config.wandb.log_gradients else "parameters"
             )
+            gen_table = wandb.Table(columns=["step", "prompt", "output"])
 
     train_dataset = GPT2Dataset(
-        config.seq_len, split="train", train_ratio=0.9, total_samples=20750
+        config.seq_len, split="train", train_ratio=0.9
     )
     valid_dataset = GPT2Dataset(
-        config.seq_len, split="valid", train_ratio=0.9, total_samples=20750
+        config.seq_len, split="valid", train_ratio=0.9
     )
 
     train_sampler = DistributedSampler(
@@ -186,6 +220,30 @@ def main():
                 batch_idx >= num_batches_to_process
             ): 
                 break
+            ##########################################
+
+            if (batch_idx +1) % grad_accum_steps == 0:
+                if rank == 0:
+                    model_to_generate = (
+                        gpt2.module if isinstance(gpt2, DDP) else gpt2
+                    )
+                    generated_text = generate_sample_text(
+                        model_to_generate,
+                        tokenizer,
+                        device,
+                    )
+                    temp_table = wandb.Table(
+                        columns=gen_table.columns, data=gen_table.data
+                    )
+                    temp_table.add_data(
+                        global_step,
+                        "In a world where humans have unlimited power, Sai was",
+                        generated_text,
+                    )
+                    wandb.log({"generation/samples": temp_table}, step=global_step)
+                    gen_table = temp_table
+
+                gpt2.train()
             ##########################################
             if batch_idx % grad_accum_steps == 0:
                 step_start = time.time()
