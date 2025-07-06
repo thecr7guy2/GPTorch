@@ -1,33 +1,30 @@
-import torch
-import torch.nn as nn
-from test_model import GPT
-from test_model import Config
-from test_dataset import GPT2Dataset
-from torch.utils.data import DataLoader
-import yaml
-from tqdm import tqdm
-import logging
 import os
 import wandb
 import math
 import time
+import yaml
+from tqdm import tqdm
 
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader
 
-logging.basicConfig(
-    filename="training.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+from test_model import GPT
+from test_model import Config
+from test_dataset import GPT2Dataset
 
 
 def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth"):
+    model_to_save = model.module if isinstance(model, DDP) else model
     checkpoint = {
         "epoch": epoch,
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model_to_save.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
     }
     torch.save(checkpoint, path)
-    logging.info(f"Checkpoint saved at epoch {epoch}")
 
 
 # def load_checkpoint(model, optimizer, path="checkpoint.pth"):
@@ -41,210 +38,271 @@ def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth"):
 #     else:
 #         return model, optimizer, 0
 
-max_lr = 6e-4
-min_lr = 0.1 * max_lr
-warm_steps = 10000  # we go with random numbers here for now
-max_steps = 263636  # we go with random numbers here for now
 
-
-def get_lr(step):
+def get_lr(step, total_training_steps, max_lr):
+    warm_steps = int(0.1 * total_training_steps)
+    min_lr = 0.1 * max_lr
     if step < warm_steps:
         return max_lr * (step + 1) / warm_steps
-    if step > max_steps:
+    if step > total_training_steps:
         return min_lr
-
-    decay_ratio = (step - warm_steps) / (max_steps - warm_steps)
+    decay_ratio = (step - warm_steps) / (total_training_steps - warm_steps)
     coeff = 0.5 * (1 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
 
+def setup_ddp():
+    """Initialize the distributed environment"""
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+
+    dist.init_process_group(rank=rank, world_size=world_size, backend="nccl")
+    torch.cuda.set_device(local_rank)
+    return rank, world_size, local_rank
+
+
+def cleanup_ddp():
+    """Clean up the distributed process group"""
+    dist.destroy_process_group()
+
+
 def main():
+    rank, world_size, local_rank = setup_ddp()
+    device = torch.device(f"cuda:{local_rank}")
 
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
     torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
 
     with open("config.yaml", "r") as file:
         config = yaml.safe_load(file)
 
     config = Config(config)
 
-    # Load the config file
     gpt2 = GPT(config)
-    # Load the model
-    gpt2 = gpt2.to(device)
-
-    gpt2 = torch.compile(gpt2)
-
-    # Send the model to GPU
-    logging.info(f"compiled and Loaded model")
+    gpt2.to(device)
+    gpt2 = torch.compile(gpt2)  # TODO research what fullggraph =True does
+    gpt2 = DDP(gpt2, device_ids=[local_rank], output_device=local_rank)
 
     if config.wandb.project_name:
-        wandb.init(
-            project=config.wandb.project_name,
-            entity=config.wandb.entity,
-            config=config.__dict__,
-        )
-        wandb.run.name = f"gpt_train-{wandb.run.id}"
-        wandb.watch(gpt2, log="all" if config.wandb.log_gradients else "parameters")
+        if rank == 0:
+            wandb.init(
+                project=config.wandb.project_name,
+                entity=config.wandb.entity,
+                config=config.__dict__,
+            )
+            wandb.run.name = f"gpt_train-{wandb.run.id}"
+            wandb.watch(
+                gpt2.module, log="all" if config.wandb.log_gradients else "parameters"
+            )
 
     train_dataset = GPT2Dataset(
-        config.seq_len, split="train", train_ratio=0.9, total_samples=10750
+        config.seq_len, split="train", train_ratio=0.9, total_samples=20750
     )
     valid_dataset = GPT2Dataset(
-        config.seq_len, split="valid", train_ratio=0.9, total_samples=10750
+        config.seq_len, split="valid", train_ratio=0.9, total_samples=20750
     )
-    train_loader = DataLoader(
-        dataset=train_dataset,
-        batch_size=config.batch_size,
+
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=world_size,
+        rank=rank,
         shuffle=True,
+        seed=config.seed,
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        sampler=train_sampler,
+        drop_last=True,
+        num_workers=4,
+        pin_memory=True,
+    )
+
+    valid_sampler = DistributedSampler(
+        valid_dataset, num_replicas=world_size, rank=rank, shuffle=False
     )
     valid_loader = DataLoader(
-        dataset=valid_dataset,
+        valid_dataset,
         batch_size=config.batch_size,
-        shuffle=False,
+        sampler=valid_sampler,
+        num_workers=4,
+        pin_memory=True,
     )
-    torch.set_float32_matmul_precision("high")
 
-    logging.info(f"Loaded Data")
+    assert (
+        config.total_batch_size % (config.batch_size * config.seq_len * world_size) == 0
+    )
+    grad_accum_steps = config.total_batch_size // (
+        config.batch_size * config.seq_len * world_size
+    )
+    num_batches_to_process = (len(train_loader) // grad_accum_steps) * grad_accum_steps
+    steps_per_epoch = num_batches_to_process // grad_accum_steps
+    total_training_steps = config.epochs * steps_per_epoch
+
+    if rank == 0:
+        print(grad_accum_steps)
+
+    torch.set_float32_matmul_precision("high")
 
     optimizer = torch.optim.AdamW(
         gpt2.parameters(),
-        lr=3e-4,
         betas=(config.beta1, config.beta2),
         weight_decay=config.weight_decay,
         fused=True,
     )
 
     loss_fn = nn.CrossEntropyLoss()
-    total_batch_size = 524288
-    grad_accum_steps = total_batch_size // (config.batch_size * config.seq_len)
-    num_batches_to_process = (len(train_loader) // grad_accum_steps) * grad_accum_steps
 
     # gpt2, optimizer, start_epoch = load_checkpoint(gpt2, optimizer) #TODO uncomment this and comment next line
     start_epoch = 0
     global_step = start_epoch * (num_batches_to_process // grad_accum_steps)
-    total_tokens_seen = global_step * config.batch_size * config.seq_len
-
-    optimizer.zero_grad()
+    total_tokens_seen = (
+        global_step * config.batch_size * config.seq_len * grad_accum_steps
+    )
 
     for epoch in range(start_epoch, config.epochs):
         gpt2.train()
+        train_sampler.set_epoch(epoch)
+        ##########################################
+        if rank == 0:
+            train_loop = tqdm(
+                train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]"
+            )
+        else:
+            train_loop = train_loader
+        ##########################################
         epoch_start = time.time()
         epoch_tokens = 0
-        train_loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
-        step_loss = 0
-        running_train_loss = 0
+        step_loss = torch.tensor(0.0, device=device)
+        running_train_loss = 0.0
+        optimizer.zero_grad(set_to_none=True)
+        ##########################################
         for batch_idx, batch in enumerate(train_loop):
-            if batch_idx >= num_batches_to_process:
+            if (
+                batch_idx >= num_batches_to_process
+            ): 
                 break
+            ##########################################
             if batch_idx % grad_accum_steps == 0:
                 step_start = time.time()
+            ##########################################
             inputs, targets = batch
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            #######################
-            #######################
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            ##########################################
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits = gpt2(inputs)
             B, T, C = logits.shape
-            micro_step_loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
+            micro_step_loss = loss_fn(logits.float().reshape(B * T, C), targets.reshape(B * T))
             micro_step_loss = micro_step_loss / grad_accum_steps
-            step_loss = step_loss + micro_step_loss.item()
-            micro_step_loss.backward()
-            #######################
-            #######################
+            step_loss = step_loss + micro_step_loss.detach()
             if (batch_idx + 1) % grad_accum_steps == 0:
+                gpt2.require_backward_grad_sync = True
+            else:
+                gpt2.require_backward_grad_sync = False
+            micro_step_loss.backward()
+            ##########################################
+            if (batch_idx + 1) % grad_accum_steps == 0:
+                dist.all_reduce(step_loss, op=dist.ReduceOp.AVG)
                 grad_norm = nn.utils.clip_grad_norm_(gpt2.parameters(), 1.0)
-                current_lr = get_lr(global_step)
+                current_lr = get_lr(global_step, total_training_steps, config.max_lr)
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = current_lr
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 torch.cuda.synchronize()
                 step_end = time.time()
-                running_train_loss = running_train_loss + step_loss
-                train_loop.set_postfix(loss=step_loss)
-                epoch_tokens = epoch_tokens + (B * T * grad_accum_steps)
-                total_tokens_seen = total_tokens_seen + (B * T * grad_accum_steps)
-                if config.wandb.project_name:
-                    wandb.log(
-                        {
-                            "train/step_loss": step_loss,
-                            "train/avg_loss": running_train_loss
-                            / ((batch_idx + 1) // grad_accum_steps),
-                            "train/perplexity": math.exp(
-                                running_train_loss
-                                / ((batch_idx + 1) // grad_accum_steps)
-                            ),
-                            "train/grad_norm": grad_norm.item(),
-                            "train/lr": current_lr,
-                            "train/total_tokens_seen": total_tokens_seen,
-                            "train/time_per_step": (step_end - step_start) * 1000,
-                            "train/step_throughput": (B * T * grad_accum_steps)
-                            / (step_end - step_start),
-                        },
-                        step=global_step,
-                    )
-                step_loss = 0
+                running_train_loss = running_train_loss + step_loss.item()
+                if rank == 0:
+                    train_loop.set_postfix(loss=step_loss.item())
+                epoch_tokens = epoch_tokens + (B * T * grad_accum_steps * world_size)
+                total_tokens_seen = total_tokens_seen + (
+                    B * T * grad_accum_steps * world_size
+                )
+                ############################################
+                if rank == 0:
+                    if config.wandb.project_name:
+                        wandb.log(
+                            {
+                                "train/step_loss": step_loss.item(),
+                                "train/avg_loss": running_train_loss
+                                / ((batch_idx + 1) // grad_accum_steps),
+                                "train/perplexity": math.exp(
+                                    running_train_loss
+                                    / ((batch_idx + 1) // grad_accum_steps)
+                                ),
+                                "train/grad_norm": grad_norm.item(),
+                                "train/lr": current_lr,
+                                "train/total_tokens_seen": total_tokens_seen,
+                                "train/time_per_step": (step_end - step_start) * 1000,
+                                "train/step_throughput": (
+                                    B * T * grad_accum_steps * world_size
+                                )
+                                / (step_end - step_start),
+                            },
+                            step=global_step,
+                        )
+                step_loss.zero_()
                 global_step = global_step + 1
 
         avg_train_loss = running_train_loss / (
             num_batches_to_process / grad_accum_steps
         )
         throughput = epoch_tokens / (time.time() - epoch_start)
-        train_loop.set_postfix(loss=avg_train_loss)
-        print(
-            f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}, Throughput :{throughput}"
-        )
-        logging.info(f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}")
-        if config.wandb.project_name:
-            wandb.log(
-                {"train/average_throughput": throughput},
-                step=global_step,
+        if rank == 0:
+            train_loop.set_postfix(loss=avg_train_loss)
+            print(
+                f"Epoch {epoch+1} Average Train Loss: {avg_train_loss:.4f}, Throughput :{throughput}"
             )
+            if config.wandb.project_name:
+                wandb.log(
+                    {"train/average_throughput": throughput},
+                    step=global_step,
+                )
 
         #########################################
         # Begin Validation
         ########################################
 
         gpt2.eval()
-        running_val_loss = 0
+        running_val_loss = torch.tensor(0.0, device=device)
         with torch.no_grad():
             for inputs, targets in valid_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
+                inputs, targets = inputs.to(device, non_blocking=True), targets.to(
+                    device, non_blocking=True
+                )
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     logits = gpt2(inputs)
                 B, T, C = logits.shape
-                loss = loss_fn(logits.reshape(B * T, C), targets.reshape(B * T))
-                running_val_loss = running_val_loss + loss.item()
+                loss = loss_fn(logits.float().reshape(B * T, C), targets.reshape(B * T))
+                running_val_loss = running_val_loss + loss.detach()
 
-        avg_val_loss = running_val_loss / len(valid_loader)
-        if config.wandb.project_name:
-            wandb.log(
-                {
-                    "validation/avg_loss": avg_val_loss,
-                    "validation/perplexity": math.exp(avg_val_loss),
-                    "epoch": epoch,
-                },
-                step=global_step,
+        
+       
+        dist.all_reduce(running_val_loss, op=dist.ReduceOp.SUM)
+        avg_val_loss = running_val_loss.item() / (len(valid_loader) * world_size)
+        if rank == 0:
+            if config.wandb.project_name:
+                wandb.log(
+                    {
+                        "validation/avg_loss": avg_val_loss,
+                        "validation/perplexity": math.exp(avg_val_loss),
+                        "epoch": epoch,
+                    },
+                    step=global_step,
+                )
+
+            print(
+                f"Epoch {epoch+1} — Train Loss: {avg_train_loss:.4f} | Valid Loss: {avg_val_loss:.4f}"
             )
 
-        logging.info(f"Epoch {epoch+1} Average Val Loss: {avg_val_loss:.4f}")
+            save_checkpoint(gpt2, optimizer, epoch)
 
-        print(
-            f"Epoch {epoch+1} — Train Loss: {avg_train_loss:.4f} | Valid Loss: {avg_val_loss:.4f}"
-        )
-
-        save_checkpoint(gpt2, optimizer, epoch)
+    cleanup_ddp()
 
 
 if __name__ == "__main__":

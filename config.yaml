@@ -13,7 +13,7 @@ seq_len: 1024
 seed: 42              # Random seed for reproducibility
 epochs: 5            # Number of training epochs
 batch_size: 8       # Batch size for each gradient step
-mega_batch_size: 512  # Size of batches loaded from DataLoader
+total_batch_size: 524288  # Size of batches loaded from DataLoader
 grad_clip: 1.0        # Gradient clipping
 # Optimizer Configuration
 optimizer: "adamw"    # Optimizer: "adamw" or "adam"y
@@ -76,5 +76,4 @@ dataset:
 wandb:
   project_name: "gpt-2-small-cc-stories"
   entity: "training-transformers-vast"
-  log_interval: 10
   log_gradients: true
